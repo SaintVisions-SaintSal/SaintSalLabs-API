@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: saintsallabs-api
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY_FALLBACK
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: API_SECRET
+        sync: false
