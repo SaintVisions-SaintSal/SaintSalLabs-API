@@ -21,6 +21,12 @@ const GEMINI_KEY           = process.env.GEMINI_API_KEY;
 const GEMINI_KEY_FALLBACK  = process.env.GEMINI_API_KEY_FALLBACK;
 const XAI_KEY              = process.env.XAI_API_KEY;
 const API_SECRET           = process.env.API_SECRET || 'sal-live-2026';
+const SUPABASE_URL         = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const ELEVENLABS_KEY       = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_AGENT     = process.env.ELEVENLABS_AGENT_ID;
+const DEEPGRAM_KEY         = process.env.DEEPGRAM_API_KEY;
+const STRIPE_SECRET        = process.env.STRIPE_SECRET_KEY;
 
 app.use(helmet());
 app.use(cors({ origin: '*' }));
@@ -37,14 +43,18 @@ function auth(req, res, next) {
 app.get('/health', (req, res) => {
   res.json({
     status:  'ok',
-    service: 'SaintSal Labs API Gateway v2',
+    service: 'SaintSal Labs API Gateway v3',
     patent:  'US #10,290,222',
-    version: '2.0.0',
+    version: '3.0.0',
     providers: {
-      anthropic: !!ANTHROPIC_KEY,
-      openai:    !!OPENAI_KEY,
-      gemini:    !!GEMINI_KEY,
-      xai:       !!XAI_KEY,
+      anthropic:  !!ANTHROPIC_KEY,
+      openai:     !!OPENAI_KEY,
+      gemini:     !!GEMINI_KEY,
+      xai:        !!XAI_KEY,
+      elevenlabs: !!ELEVENLABS_KEY,
+      deepgram:   !!DEEPGRAM_KEY,
+      supabase:   !!SUPABASE_URL,
+      stripe:     !!STRIPE_SECRET,
     },
   });
 });
@@ -627,8 +637,154 @@ app.get('/api/social/status', auth, (req, res) => {
   });
 });
 
+// ── ElevenLabs Voice — Signed URL ────────────────────
+app.get('/api/voice/signed-url', auth, async (req, res) => {
+  if (!ELEVENLABS_KEY || !ELEVENLABS_AGENT) {
+    return res.status(503).json({ error: 'ElevenLabs not configured' });
+  }
+  try {
+    const upstream = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${ELEVENLABS_AGENT}`,
+      { headers: { 'xi-api-key': ELEVENLABS_KEY } }
+    );
+    if (!upstream.ok) {
+      const err = await upstream.text();
+      return res.status(upstream.status).json({ error: err });
+    }
+    const data = await upstream.json();
+    res.json({ signed_url: data.signed_url });
+  } catch (err) {
+    console.error('ElevenLabs signed-url error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── ElevenLabs TTS ───────────────────────────────────
+app.post('/api/voice/tts', auth, async (req, res) => {
+  const { text, voice_id, model_id } = req.body;
+  if (!text) return res.status(400).json({ error: 'text is required' });
+  if (!ELEVENLABS_KEY) return res.status(503).json({ error: 'ElevenLabs not configured' });
+
+  const vid = voice_id || '21m00Tcm4TlvDq8ikWAM'; // Rachel default
+  try {
+    const upstream = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${vid}/stream`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'xi-api-key': ELEVENLABS_KEY },
+        body: JSON.stringify({
+          text,
+          model_id: model_id || 'eleven_turbo_v2_5',
+          voice_settings: { stability: 0.5, similarity_boost: 0.8 },
+        }),
+      }
+    );
+    if (!upstream.ok) {
+      const err = await upstream.text();
+      return res.status(upstream.status).json({ error: err });
+    }
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+    res.end();
+  } catch (err) {
+    console.error('TTS error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Deepgram STT ─────────────────────────────────────
+app.post('/api/voice/stt', auth, async (req, res) => {
+  if (!DEEPGRAM_KEY) return res.status(503).json({ error: 'Deepgram not configured' });
+
+  try {
+    const upstream = await fetch(
+      'https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Token ${DEEPGRAM_KEY}`,
+          'Content-Type': req.headers['content-type'] || 'audio/wav',
+        },
+        body: req,
+      }
+    );
+    if (!upstream.ok) {
+      const err = await upstream.text();
+      return res.status(upstream.status).json({ error: err });
+    }
+    const data = await upstream.json();
+    const transcript = data.results?.channels?.[0]?.alternatives?.[0]?.transcript || '';
+    res.json({ transcript, confidence: data.results?.channels?.[0]?.alternatives?.[0]?.confidence || 0 });
+  } catch (err) {
+    console.error('STT error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Supabase Auth Verify ─────────────────────────────
+app.post('/api/auth/verify', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'No token provided' });
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    return res.status(503).json({ error: 'Supabase not configured' });
+  }
+  try {
+    const upstream = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_SERVICE_KEY },
+    });
+    if (!upstream.ok) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    const user = await upstream.json();
+    res.json({ valid: true, user_id: user.id, email: user.email });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Stripe: Create Checkout Session ──────────────────
+app.post('/api/billing/checkout', auth, async (req, res) => {
+  const { price_id, user_id, email, success_url, cancel_url } = req.body;
+  if (!price_id) return res.status(400).json({ error: 'price_id is required' });
+  if (!STRIPE_SECRET) return res.status(503).json({ error: 'Stripe not configured' });
+
+  try {
+    const params = new URLSearchParams();
+    params.append('mode', 'subscription');
+    params.append('line_items[0][price]', price_id);
+    params.append('line_items[0][quantity]', '1');
+    params.append('success_url', success_url || 'saintsallabs://billing/success');
+    params.append('cancel_url', cancel_url || 'saintsallabs://billing/cancel');
+    if (email) params.append('customer_email', email);
+    if (user_id) params.append('metadata[user_id]', user_id);
+
+    const upstream = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(STRIPE_SECRET + ':').toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params,
+    });
+    const data = await upstream.json();
+    if (!upstream.ok) return res.status(upstream.status).json({ error: data.error?.message || 'Stripe error' });
+    res.json({ url: data.url, session_id: data.id });
+  } catch (err) {
+    console.error('Stripe checkout error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(`SaintSal Labs API Gateway v2 on port ${PORT}`);
-  console.log(`Providers: Anthropic=${!!ANTHROPIC_KEY} OpenAI=${!!OPENAI_KEY} Gemini=${!!GEMINI_KEY} xAI=${!!XAI_KEY}`);
+  console.log(`SaintSal Labs API Gateway v3 on port ${PORT}`);
+  console.log(`AI: Anthropic=${!!ANTHROPIC_KEY} OpenAI=${!!OPENAI_KEY} Gemini=${!!GEMINI_KEY} xAI=${!!XAI_KEY}`);
+  console.log(`Voice: ElevenLabs=${!!ELEVENLABS_KEY} Deepgram=${!!DEEPGRAM_KEY}`);
+  console.log(`Auth: Supabase=${!!SUPABASE_URL} Stripe=${!!STRIPE_SECRET}`);
   console.log(`Social: LinkedIn=${!!LINKEDIN_CLIENT_ID} Twitter=${!!TWITTER_CONSUMER_KEY}`);
 });
