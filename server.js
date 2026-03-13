@@ -781,6 +781,244 @@ app.post('/api/billing/checkout', auth, async (req, res) => {
   }
 });
 
+// ── Builder V2 — Structured Codegen ─────────────────
+const BUILDER_V2_SYSTEM = `You are SAL Builder V2. You generate complete web applications. You MUST respond with ONLY valid JSON — no markdown, no backticks, no explanation outside the JSON. Generate complete, production-ready code. Every file must be complete — no placeholders, no truncation. Default stack: vanilla HTML/CSS/JS for simple apps, React+Vite for complex apps. SaintSal design: #0C0C0F bg, #F59E0B amber, #E8E6E1 text.
+
+You MUST respond with ONLY this JSON structure:
+{"thought":"Brief explanation of approach","files":[{"path":"index.html","content":"complete file content","language":"html"}],"preview_entry":"index.html","dependencies":[],"next_steps":["suggestion 1","suggestion 2"]}
+
+Rules:
+- Every file must be complete and production-ready
+- No placeholder comments like "// TODO" or "// add code here"
+- Include all necessary files (HTML, CSS, JS, config)
+- The preview_entry must be an HTML file that can be opened directly
+- For React/Vite apps, generate a complete index.html that loads the bundle
+- Apply SaintSal design system colors when appropriate`;
+
+app.post('/api/builder/v2/generate', auth, async (req, res) => {
+  console.log('POST /api/builder/v2/generate');
+  const { prompt, project_id, files, conversation } = req.body;
+
+  if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+  if (!ANTHROPIC_KEY) return res.status(503).json({ error: 'Anthropic not configured' });
+
+  // Build messages array
+  const messages = [];
+
+  // Include conversation history if provided
+  if (conversation?.length) {
+    for (const msg of conversation) {
+      messages.push({ role: msg.role, content: msg.content });
+    }
+  }
+
+  // Build user message with file context for iterative edits
+  let userContent = prompt;
+  if (files?.length) {
+    const fileContext = files.map(f =>
+      `--- ${f.path} ---\n${f.content}`
+    ).join('\n\n');
+    userContent = `EXISTING PROJECT FILES (edit these, do not start fresh):\n\n${fileContext}\n\nUSER REQUEST:\n${prompt}`;
+  }
+
+  messages.push({ role: 'user', content: userContent });
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000);
+
+    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 16384,
+        system: BUILDER_V2_SYSTEM,
+        messages,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (!upstream.ok) {
+      const err = await upstream.text();
+      return res.status(upstream.status).json({ error: err });
+    }
+
+    const data = await upstream.json();
+    const rawText = data.content?.[0]?.text || '';
+
+    // Parse JSON — strip any accidental markdown wrapping
+    const cleaned = rawText.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '').trim();
+
+    try {
+      const result = JSON.parse(cleaned);
+      res.json({
+        thought: result.thought || '',
+        files: result.files || [],
+        preview_entry: result.preview_entry || 'index.html',
+        next_steps: result.next_steps || [],
+      });
+    } catch {
+      // If JSON parse fails, wrap raw text as a single HTML file
+      res.json({
+        thought: 'Response was not structured JSON — returning raw output.',
+        files: [{ path: 'output.txt', content: rawText, language: 'text' }],
+        preview_entry: 'output.txt',
+        next_steps: ['Try a more specific prompt'],
+      });
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      return res.status(504).json({ error: 'Request timed out (120s limit)' });
+    }
+    console.error('Builder V2 generate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Builder V2 — Save Project to Supabase ───────────
+app.post('/api/builder/v2/projects', auth, async (req, res) => {
+  console.log('POST /api/builder/v2/projects');
+  const { user_id, name, files, preview_entry, conversation } = req.body;
+
+  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    return res.status(503).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    const upstream = await fetch(`${SUPABASE_URL}/rest/v1/builder_projects`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation',
+      },
+      body: JSON.stringify({
+        user_id,
+        name,
+        files: files || [],
+        preview_entry: preview_entry || 'index.html',
+        conversation: conversation || [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }),
+    });
+
+    if (!upstream.ok) {
+      const err = await upstream.text();
+      return res.status(upstream.status).json({ error: `Supabase error: ${err}` });
+    }
+
+    const data = await upstream.json();
+    res.json(data[0] || data);
+  } catch (err) {
+    console.error('Builder V2 save project error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Builder V2 — List User Projects ─────────────────
+app.get('/api/builder/v2/projects/:user_id', auth, async (req, res) => {
+  console.log(`GET /api/builder/v2/projects/${req.params.user_id}`);
+  const { user_id } = req.params;
+
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    return res.status(503).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    const upstream = await fetch(
+      `${SUPABASE_URL}/rest/v1/builder_projects?user_id=eq.${encodeURIComponent(user_id)}&order=updated_at.desc`,
+      {
+        headers: {
+          'apikey': SUPABASE_SERVICE_KEY,
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        },
+      }
+    );
+
+    if (!upstream.ok) {
+      const err = await upstream.text();
+      return res.status(upstream.status).json({ error: `Supabase error: ${err}` });
+    }
+
+    const data = await upstream.json();
+    res.json(data);
+  } catch (err) {
+    console.error('Builder V2 list projects error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Builder V2 — Deploy (Generate Preview HTML) ─────
+app.post('/api/builder/v2/deploy', auth, async (req, res) => {
+  console.log('POST /api/builder/v2/deploy');
+  const { files, preview_entry } = req.body;
+
+  if (!files?.length) return res.status(400).json({ error: 'files array is required' });
+
+  try {
+    const entry = preview_entry || 'index.html';
+    const htmlFile = files.find(f => f.path === entry);
+
+    if (!htmlFile) {
+      return res.status(400).json({ error: `Preview entry "${entry}" not found in files array` });
+    }
+
+    // Build a lookup map for quick file access
+    const fileMap = {};
+    for (const f of files) {
+      fileMap[f.path] = f.content;
+    }
+
+    let html = htmlFile.content;
+
+    // Inline CSS: replace <link rel="stylesheet" href="X"> with <style>content</style>
+    html = html.replace(
+      /<link\s+[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*\/?>/gi,
+      (match, href) => {
+        const css = fileMap[href];
+        if (css) return `<style>\n${css}\n</style>`;
+        return match;
+      }
+    );
+
+    // Also handle <link href="X" rel="stylesheet"> (href before rel)
+    html = html.replace(
+      /<link\s+[^>]*href=["']([^"']+)["'][^>]*rel=["']stylesheet["'][^>]*\/?>/gi,
+      (match, href) => {
+        const css = fileMap[href];
+        if (css) return `<style>\n${css}\n</style>`;
+        return match;
+      }
+    );
+
+    // Inline JS: replace <script src="X"></script> with <script>content</script>
+    html = html.replace(
+      /<script\s+[^>]*src=["']([^"']+)["'][^>]*><\/script>/gi,
+      (match, src) => {
+        const js = fileMap[src];
+        if (js) return `<script>\n${js}\n</script>`;
+        return match;
+      }
+    );
+
+    res.json({ html, preview_url: null });
+  } catch (err) {
+    console.error('Builder V2 deploy error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`SaintSal Labs API Gateway v3 on port ${PORT}`);
   console.log(`AI: Anthropic=${!!ANTHROPIC_KEY} OpenAI=${!!OPENAI_KEY} Gemini=${!!GEMINI_KEY} xAI=${!!XAI_KEY}`);
