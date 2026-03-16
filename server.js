@@ -1,8 +1,8 @@
 /**
- * SaintSal Labs — AI API Gateway v2
+ * SaintSal Labs — AI API Gateway v3
  * Proxies: Anthropic, xAI, OpenAI, Gemini
- * NEW: /api/builder endpoint for SAL Builder
- * 
+ * Integrations: CorpNet Business Formation + Tax Registration, Builder, Social, Voice
+ *
  * Deploy to Render: https://render.com
  * US Patent #10,290,222 · HACP Protocol
  */
@@ -1019,10 +1019,15 @@ app.post('/api/builder/v2/deploy', auth, async (req, res) => {
   }
 });
 
+// ─── CorpNet Business Formation + Tax Registration ────────────────────────────
+const corpnetRouter = require('./api/corpnet');
+app.use('/api/corpnet', corpnetRouter);
+
 app.listen(PORT, () => {
   console.log(`SaintSal Labs API Gateway v3 on port ${PORT}`);
   console.log(`AI: Anthropic=${!!ANTHROPIC_KEY} OpenAI=${!!OPENAI_KEY} Gemini=${!!GEMINI_KEY} xAI=${!!XAI_KEY}`);
   console.log(`Voice: ElevenLabs=${!!ELEVENLABS_KEY} Deepgram=${!!DEEPGRAM_KEY}`);
   console.log(`Auth: Supabase=${!!SUPABASE_URL} Stripe=${!!STRIPE_SECRET}`);
   console.log(`Social: LinkedIn=${!!LINKEDIN_CLIENT_ID} Twitter=${!!TWITTER_CONSUMER_KEY}`);
+  console.log(`CorpNet: env=${process.env.CORPNET_ENV || 'staging'} token=${!!(process.env.CORPNET_BEARER_TOKEN || 'staging-default')}`);
 });
