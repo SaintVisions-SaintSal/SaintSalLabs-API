@@ -65,7 +65,11 @@ async function corpnetRequest(method, url, body = null) {
     return { binary: true, buffer, contentType, status: response.status };
   }
 
-  const data = await response.json();
+  let data = await response.json();
+  // CorpNet sometimes returns a double-encoded JSON string — parse it
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch (_) {}
+  }
   return { binary: false, data, status: response.status };
 }
 
