@@ -32,10 +32,9 @@ const CORPNET_TAX_BASE_URL = CORPNET_ENV === 'production'
   ? 'https://api.corpnet.com'
   : 'https://staging22api.corpnet.com';
 
-const CORPNET_BEARER_TOKEN = process.env.CORPNET_BEARER_TOKEN
-  || '0D3DB6A514DAED0CEF4F97D71DC9292BA84C895FE25A4EB34D09CDF4F2242F95DB554C9C88D3044F5A05F67457B4F82C44F6';
+const CORPNET_BEARER_TOKEN = process.env.CORPNET_BEARER_TOKEN || '';
 
-const CORPNET_API_KEY = process.env.CORPNET_API_KEY || '7E90-738C-175F-41BD-886C';
+const CORPNET_API_KEY = process.env.CORPNET_API_KEY || '';
 
 // ─── Helper: Build headers ────────────────────────────────────────────────────
 function corpnetHeaders() {

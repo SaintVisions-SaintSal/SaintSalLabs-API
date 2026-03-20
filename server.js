@@ -20,7 +20,7 @@ const OPENAI_KEY           = process.env.OPENAI_API_KEY;
 const GEMINI_KEY           = process.env.GEMINI_API_KEY;
 const GEMINI_KEY_FALLBACK  = process.env.GEMINI_API_KEY_FALLBACK;
 const XAI_KEY              = process.env.XAI_API_KEY;
-const API_SECRET           = process.env.API_SECRET || 'sal-live-2026';
+const API_SECRET           = process.env.API_SECRET;
 const SUPABASE_URL         = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const ELEVENLABS_KEY       = process.env.ELEVENLABS_API_KEY;
@@ -28,9 +28,55 @@ const ELEVENLABS_AGENT     = process.env.ELEVENLABS_AGENT_ID;
 const DEEPGRAM_KEY         = process.env.DEEPGRAM_API_KEY;
 const STRIPE_SECRET        = process.env.STRIPE_SECRET_KEY;
 
+// SECURITY: Fail on startup if gateway secret is not set
+if (!API_SECRET) {
+  console.error('FATAL: API_SECRET env var is required. Set it in Render dashboard.');
+  process.exit(1);
+}
+
+// CORS: Allow production origins + null for iOS native (no Origin header)
+const ALLOWED_ORIGINS = [
+  'https://saintsallabs.com',
+  'https://www.saintsallabs.com',
+  'https://saintsal.ai',
+  'https://www.saintsal.ai',
+];
+if (process.env.NODE_ENV !== 'production') {
+  ALLOWED_ORIGINS.push('http://localhost:3000', 'http://localhost:5173', 'http://localhost:8000');
+}
+
+const rateLimit = require('express-rate-limit');
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 30,
+  message: { error: 'Rate limited — 30 requests/min max' },
+  standardHeaders: true, legacyHeaders: false,
+});
+const builderLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 10,
+  message: { error: 'Rate limited — 10 builds/min max' },
+  standardHeaders: true, legacyHeaders: false,
+});
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 10,
+  message: { error: 'Rate limited — 10 attempts/min max' },
+  standardHeaders: true, legacyHeaders: false,
+});
+
 app.use(helmet());
-app.use(cors({ origin: '*' }));
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error('CORS blocked'));
+  },
+}));
 app.use(express.json({ limit: '2mb' }));
+
+app.use('/api/chat', aiLimiter);
+app.use('/api/search', aiLimiter);
+app.use('/api/social/generate', aiLimiter);
+app.use('/api/builder', builderLimiter);
+app.use('/api/auth', authLimiter);
 
 // ── Auth ─────────────────────────────────────────────
 function auth(req, res, next) {
