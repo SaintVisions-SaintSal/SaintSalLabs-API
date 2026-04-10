@@ -1,0 +1,60 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "write_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[PreToolUse] Validating no API keys in file content'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "write_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --check $TOOL_OUTPUT_FILE 2>&1 || true"
+          }
+        ]
+      }
+    ],
+    "PreCommit": [
+      {
+        "type": "command",
+        "command": "grep -r 'sk-ant-\\|sk-\\|ANTHROPIC_API_KEY=\\|OPENAI_API_KEY=\\|XAI_API_KEY=' --include='*.js' api/ server.js && echo 'SECRET DETECTED — COMMIT BLOCKED' && exit 1 || echo 'PreCommit: Clean — no secrets detected'"
+      }
+    ],
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "echo '=== SaintSal Labs API Session Started ===' && echo 'Repo: SaintSalLabs-API' && echo 'Stack: Node.js | Express | Render | Claude | OpenAI | xAI | Gemini' && git log --oneline -5 2>/dev/null || true"
+      }
+    ],
+    "Notification": [
+      {
+        "type": "command",
+        "command": "echo '[SaintSal API] Notification: $NOTIFICATION_MESSAGE'"
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Write(api/**)",
+      "Write(server.js)",
+      "Write(render.yaml)",
+      "Bash(git *)",
+      "Bash(npm *)",
+      "Bash(node *)",
+      "Bash(curl *)"
+    ],
+    "deny": [
+      "Write(.env)",
+      "Bash(rm -rf *)"
+    ]
+  }
+}
